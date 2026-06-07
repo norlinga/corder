@@ -14,6 +14,7 @@ import (
 
 	"corder/internal/audio"
 	"corder/internal/conversion"
+	"corder/internal/jobs"
 	"corder/internal/platform"
 	"corder/internal/recording"
 	"corder/internal/settings"
@@ -54,7 +55,7 @@ type devicesMsg struct {
 	err     error
 }
 type levelMsg audio.LevelUpdate
-type conversionMsg conversion.Progress
+type jobMsg jobs.Update
 type diagnosticMsg struct {
 	info  audio.Diagnostics
 	probe audio.ProbeResult
@@ -119,7 +120,7 @@ type model struct {
 	captureStats  audio.CaptureStats
 	lastCapture   audio.CaptureStats
 	lastUpdate    time.Time
-	converting    map[string]conversion.Progress
+	jobs          jobs.Tracker
 	diagnostics   audio.Diagnostics
 	probe         audio.ProbeResult
 	diagnosticErr error
@@ -141,11 +142,11 @@ func Run() error {
 	}
 	backend := &audio.Backend{}
 	m := &model{
-		cfg:        cfg,
-		backend:    backend,
-		converting: map[string]conversion.Progress{},
-		updates:    make(chan tea.Msg, 128),
-		platform:   platform.New(),
+		cfg:      cfg,
+		backend:  backend,
+		jobs:     jobs.NewTracker(),
+		updates:  make(chan tea.Msg, 128),
+		platform: platform.New(),
 		workflow: recording.Workflow{
 			Recorder:  audioRecorder{backend: backend},
 			Converter: recording.SystemConverter{},
@@ -212,15 +213,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastCapture = lev.Stats
 		}
 		return m, m.listenUpdatesCmd()
-	case conversionMsg:
-		p := conversion.Progress(msg)
-		m.converting[p.Source] = p
-		if p.Done {
-			delete(m.converting, p.Source)
-			m.message = p.Message
+	case jobMsg:
+		update := jobs.Update(msg)
+		m.jobs.Set(update)
+		if update.Finished() {
+			m.jobs.Delete(update.ID)
+			m.message = update.Message
 			return m, tea.Batch(m.listenUpdatesCmd(), m.refreshCmd())
 		}
-		m.message = fmt.Sprintf("%s %.0f%%", p.Message, p.Percent)
+		m.message = update.DisplayStatus()
 		return m, m.listenUpdatesCmd()
 	case diagnosticMsg:
 		m.diagnosticRun = true
@@ -260,12 +261,15 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, m.listenUpdatesCmd()
 		}
 		if msg.queued {
-			m.converting[msg.path] = conversion.Progress{
-				Source:      msg.path,
+			m.jobs.Set(jobs.Update{
+				ID:          msg.path,
+				Kind:        jobs.KindConversion,
+				Path:        msg.path,
 				Destination: msg.destination,
 				Percent:     0,
 				Message:     "Converting",
-			}
+				Status:      jobs.StatusQueued,
+			})
 			m.message = "Converting to MP3"
 		} else {
 			m.message = "Saved WAV"
@@ -589,8 +593,8 @@ func (m *model) mainView() string {
 			}
 			status := m.displayStatus(rec)
 			displayName := rec.Name
-			if p, ok := m.converting[rec.Path]; ok && p.Destination != "" {
-				displayName = filepath.Base(p.Destination)
+			if job, ok := m.jobs.Get(rec.Path); ok && job.Destination != "" {
+				displayName = filepath.Base(job.Destination)
 			}
 			line := fmt.Sprintf("%s %-29s %-12s %-10s %-12s %s",
 				prefix,
@@ -832,8 +836,8 @@ func (m *model) applyStatuses() {
 }
 
 func (m *model) displayStatus(rec storage.Recording) string {
-	if p, ok := m.converting[rec.Path]; ok {
-		return fmt.Sprintf("%s %.0f%%", p.Message, p.Percent)
+	if job, ok := m.jobs.Get(rec.Path); ok {
+		return job.DisplayStatus()
 	}
 	if m.recording && rec.Path == m.currentPath {
 		if m.stopRequested {
@@ -944,18 +948,27 @@ func (m *model) runConversion(source string, startedAt time.Time, duration time.
 		BitrateKbps: bitrate,
 		RetainWAV:   retainWAV,
 	}
-	updates := make(chan conversion.Progress, 32)
+	updates := make(chan jobs.Update, 32)
 	go func() {
 		if err := conversion.Run(ctx, job, updates); err != nil {
 			select {
-			case updates <- conversion.Progress{Source: source, Destination: dst, Err: err, Done: true, Message: "Conversion failed"}:
+			case updates <- jobs.Update{
+				ID:          source,
+				Kind:        jobs.KindConversion,
+				Path:        source,
+				Destination: dst,
+				Percent:     100,
+				Message:     "Conversion failed",
+				Status:      jobs.StatusFailed,
+				Err:         err,
+			}:
 			default:
 			}
 		}
 		close(updates)
 	}()
 	for p := range updates {
-		m.updates <- conversionMsg(p)
+		m.updates <- jobMsg(p)
 	}
 }
 

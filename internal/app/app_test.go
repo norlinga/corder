@@ -10,7 +10,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"corder/internal/audio"
-	"corder/internal/conversion"
+	"corder/internal/jobs"
 	"corder/internal/platform"
 	"corder/internal/recording"
 	"corder/internal/storage"
@@ -22,10 +22,9 @@ func TestDisplayStatusPrefersTransientConversionState(t *testing.T) {
 		Status: storage.StatusReady,
 	}
 	m := &model{
-		converting: map[string]conversion.Progress{
-			rec.Path: {Message: "Converting", Percent: 37},
-		},
+		jobs: jobs.NewTracker(),
 	}
+	m.jobs.Set(jobs.Update{ID: rec.Path, Kind: jobs.KindConversion, Path: rec.Path, Message: "Converting", Percent: 37, Status: jobs.StatusRunning})
 
 	if got := m.displayStatus(rec); got != "Converting 37%" {
 		t.Fatalf("displayStatus = %q, want Converting 37%%", got)
@@ -43,7 +42,7 @@ func TestDisplayStatusUsesRecordingOverlay(t *testing.T) {
 	m := &model{
 		recording:   true,
 		currentPath: rec.Path,
-		converting:  map[string]conversion.Progress{},
+		jobs:        jobs.NewTracker(),
 	}
 
 	if got := m.displayStatus(rec); got != "Recording" {
@@ -64,7 +63,7 @@ func TestDisplayStatusFallsBackToStorageStatus(t *testing.T) {
 		Path:   "/recordings/a.wav",
 		Status: storage.StatusInterrupted,
 	}
-	m := &model{converting: map[string]conversion.Progress{}}
+	m := &model{jobs: jobs.NewTracker()}
 
 	if got := m.displayStatus(rec); got != storage.StatusInterrupted.String() {
 		t.Fatalf("displayStatus = %q, want %q", got, storage.StatusInterrupted)
@@ -139,7 +138,7 @@ func TestUpdateRecordStoppedQueuesConversion(t *testing.T) {
 		stopRequested: true,
 		session:       &testSession{},
 		currentPath:   "/recordings/a.wav",
-		converting:    map[string]conversion.Progress{},
+		jobs:          jobs.NewTracker(),
 	}
 
 	_, _ = m.Update(recordStoppedMsg{
@@ -154,12 +153,12 @@ func TestUpdateRecordStoppedQueuesConversion(t *testing.T) {
 	if m.message != "Converting to MP3" {
 		t.Fatalf("message = %q, want Converting to MP3", m.message)
 	}
-	progress, ok := m.converting["/recordings/a.wav"]
+	progress, ok := m.jobs.Get("/recordings/a.wav")
 	if !ok {
-		t.Fatal("conversion progress not queued")
+		t.Fatal("conversion job not queued")
 	}
 	if progress.Destination != "/recordings/a.mp3" || progress.Message != "Converting" {
-		t.Fatalf("queued progress = %+v", progress)
+		t.Fatalf("queued job = %+v", progress)
 	}
 }
 
@@ -168,7 +167,7 @@ func TestUpdateRecordStoppedErrorDoesNotQueueConversion(t *testing.T) {
 		recording:   true,
 		session:     &testSession{},
 		currentPath: "/recordings/a.wav",
-		converting:  map[string]conversion.Progress{},
+		jobs:        jobs.NewTracker(),
 	}
 
 	_, _ = m.Update(recordStoppedMsg{
@@ -180,8 +179,8 @@ func TestUpdateRecordStoppedErrorDoesNotQueueConversion(t *testing.T) {
 	if m.message != errTestStop.Error() {
 		t.Fatalf("message = %q, want stop error", m.message)
 	}
-	if len(m.converting) != 0 {
-		t.Fatalf("conversion was queued on error: %+v", m.converting)
+	if m.jobs.Len() != 0 {
+		t.Fatalf("conversion was queued on error: %+v", m.jobs)
 	}
 }
 
@@ -233,23 +232,31 @@ func TestUpdateLevelOnlyAppliesCurrentRecording(t *testing.T) {
 }
 
 func TestUpdateConversionProgressAndDone(t *testing.T) {
-	m := &model{converting: map[string]conversion.Progress{}}
-	progress := conversion.Progress{Source: "/recordings/a.wav", Destination: "/recordings/a.mp3", Percent: 37, Message: "Converting"}
+	m := &model{jobs: jobs.NewTracker()}
+	progress := jobs.Update{
+		ID:          "/recordings/a.wav",
+		Kind:        jobs.KindConversion,
+		Path:        "/recordings/a.wav",
+		Destination: "/recordings/a.mp3",
+		Percent:     37,
+		Message:     "Converting",
+		Status:      jobs.StatusRunning,
+	}
 
-	_, _ = m.Update(conversionMsg(progress))
+	_, _ = m.Update(jobMsg(progress))
 	if m.message != "Converting 37%" {
 		t.Fatalf("message = %q, want Converting 37%%", m.message)
 	}
-	if got := m.converting[progress.Source]; got.Percent != 37 {
-		t.Fatalf("converting progress = %+v, want 37%%", got)
+	if got, ok := m.jobs.Get(progress.ID); !ok || got.Percent != 37 {
+		t.Fatalf("conversion job = %+v, ok=%t, want 37%%", got, ok)
 	}
 
-	progress.Done = true
+	progress.Status = jobs.StatusDone
 	progress.Percent = 100
 	progress.Message = "Saved"
-	_, _ = m.Update(conversionMsg(progress))
-	if _, ok := m.converting[progress.Source]; ok {
-		t.Fatal("conversion progress was not cleared on Done")
+	_, _ = m.Update(jobMsg(progress))
+	if _, ok := m.jobs.Get(progress.ID); ok {
+		t.Fatal("conversion job was not cleared on done")
 	}
 	if m.message != "Saved" {
 		t.Fatalf("message = %q, want Saved", m.message)

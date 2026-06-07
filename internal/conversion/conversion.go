@@ -13,17 +13,9 @@ import (
 	"strings"
 	"time"
 
+	"corder/internal/jobs"
 	"corder/internal/storage"
 )
-
-type Progress struct {
-	Source      string
-	Destination string
-	Percent     float64
-	Message     string
-	Done        bool
-	Err         error
-}
 
 type Job struct {
 	Source      string
@@ -45,7 +37,7 @@ func DestFor(source string) string {
 	return strings.TrimSuffix(source, filepath.Ext(source)) + ".mp3"
 }
 
-func Run(ctx context.Context, job Job, updates chan<- Progress) error {
+func Run(ctx context.Context, job Job, updates chan<- jobs.Update) error {
 	cmd := exec.CommandContext(ctx, "ffmpeg", ffmpegArgs(job)...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -59,7 +51,7 @@ func Run(ctx context.Context, job Job, updates chan<- Progress) error {
 		return err
 	}
 	select {
-	case updates <- Progress{Source: job.Source, Destination: job.Destination, Percent: 0, Message: "Converting"}:
+	case updates <- conversionUpdate(job, jobs.StatusRunning, 0, "Converting", nil):
 	default:
 	}
 	go streamProgress(stdout, job, updates)
@@ -70,7 +62,7 @@ func Run(ctx context.Context, job Job, updates chan<- Progress) error {
 			waitErr = fmt.Errorf("%w: %s", waitErr, strings.TrimSpace(string(errData)))
 		}
 		select {
-		case updates <- Progress{Source: job.Source, Destination: job.Destination, Err: waitErr, Done: true, Message: "Conversion failed"}:
+		case updates <- conversionUpdate(job, jobs.StatusFailed, 100, "Conversion failed", waitErr):
 		default:
 		}
 		return waitErr
@@ -100,10 +92,23 @@ func Run(ctx context.Context, job Job, updates chan<- Progress) error {
 		}
 	}
 	select {
-	case updates <- Progress{Source: job.Source, Destination: job.Destination, Percent: 100, Done: true, Message: "Saved"}:
+	case updates <- conversionUpdate(job, jobs.StatusDone, 100, "Saved", nil):
 	default:
 	}
 	return nil
+}
+
+func conversionUpdate(job Job, status jobs.Status, percent float64, message string, err error) jobs.Update {
+	return jobs.Update{
+		ID:          job.Source,
+		Kind:        jobs.KindConversion,
+		Path:        job.Source,
+		Destination: job.Destination,
+		Percent:     percent,
+		Message:     message,
+		Status:      status,
+		Err:         err,
+	}
 }
 
 func sourceHasDistinctMeta(job Job) bool {
@@ -126,7 +131,7 @@ func ffmpegArgs(job Job) []string {
 	}
 }
 
-func streamProgress(r io.Reader, job Job, updates chan<- Progress) {
+func streamProgress(r io.Reader, job Job, updates chan<- jobs.Update) {
 	scanner := bufio.NewScanner(r)
 	for scanner.Scan() {
 		pct, ok := progressPercent(scanner.Text(), job.Duration)
@@ -134,7 +139,7 @@ func streamProgress(r io.Reader, job Job, updates chan<- Progress) {
 			continue
 		}
 		select {
-		case updates <- Progress{Source: job.Source, Destination: job.Destination, Percent: pct, Message: "Converting"}:
+		case updates <- conversionUpdate(job, jobs.StatusRunning, pct, "Converting", nil):
 		default:
 		}
 	}

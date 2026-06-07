@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"corder/internal/jobs"
 )
 
 func TestDestFor(t *testing.T) {
@@ -78,7 +80,7 @@ func TestStreamProgress(t *testing.T) {
 		Destination: "out.mp3",
 		Duration:    10 * time.Second,
 	}
-	updates := make(chan Progress, 4)
+	updates := make(chan jobs.Update, 4)
 	streamProgress(strings.NewReader("out_time_ms=1000000\nprogress=continue\nout_time_ms=2500000\n"), job, updates)
 	close(updates)
 
@@ -89,5 +91,21 @@ func TestStreamProgress(t *testing.T) {
 	want := []float64{10, 25}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("progress updates = %#v, want %#v", got, want)
+	}
+}
+
+func TestConversionUpdate(t *testing.T) {
+	job := Job{
+		Source:      "in.wav",
+		Destination: "out.mp3",
+	}
+
+	update := conversionUpdate(job, jobs.StatusRunning, 37, "Converting", nil)
+
+	if update.ID != job.Source || update.Path != job.Source || update.Destination != job.Destination {
+		t.Fatalf("update paths = %+v", update)
+	}
+	if update.Kind != jobs.KindConversion || update.Status != jobs.StatusRunning || update.Percent != 37 {
+		t.Fatalf("update status = %+v", update)
 	}
 }
