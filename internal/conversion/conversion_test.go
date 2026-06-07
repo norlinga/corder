@@ -102,7 +102,7 @@ func TestConversionUpdate(t *testing.T) {
 
 	update := conversionUpdate(job, jobs.StatusRunning, 37, "Converting", nil)
 
-	if update.ID != job.Source || update.Path != job.Source || update.Destination != job.Destination {
+	if update.ID != jobs.ID(jobs.KindConversion, job.Source) || update.Path != job.Source || update.Destination != job.Destination {
 		t.Fatalf("update paths = %+v", update)
 	}
 	if update.Kind != jobs.KindConversion || update.Status != jobs.StatusRunning || update.Percent != 37 {

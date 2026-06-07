@@ -13,6 +13,10 @@ const (
 
 const KindConversion = "conversion"
 
+func ID(kind string, path string) string {
+	return kind + ":" + path
+}
+
 type Update struct {
 	ID          string
 	Kind        string
@@ -48,6 +52,9 @@ func NewTracker() Tracker {
 
 func (t *Tracker) Set(update Update) {
 	t.ensure()
+	if update.ID == "" {
+		update.ID = ID(update.Kind, update.Path)
+	}
 	t.items[update.ID] = update
 }
 
@@ -64,6 +71,10 @@ func (t *Tracker) Get(id string) (Update, bool) {
 	}
 	update, ok := t.items[id]
 	return update, ok
+}
+
+func (t *Tracker) GetByKindPath(kind string, path string) (Update, bool) {
+	return t.Get(ID(kind, path))
 }
 
 func (t *Tracker) Len() int {

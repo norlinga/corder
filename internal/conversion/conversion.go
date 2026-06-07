@@ -100,8 +100,8 @@ func Run(ctx context.Context, job Job, updates chan<- jobs.Update) error {
 
 func conversionUpdate(job Job, status jobs.Status, percent float64, message string, err error) jobs.Update {
 	return jobs.Update{
-		ID:          job.Source,
 		Kind:        jobs.KindConversion,
+		ID:          jobs.ID(jobs.KindConversion, job.Source),
 		Path:        job.Source,
 		Destination: job.Destination,
 		Percent:     percent,

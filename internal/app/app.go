@@ -185,8 +185,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if msg.queued {
 			m.jobs.Set(jobs.Update{
-				ID:          msg.path,
 				Kind:        jobs.KindConversion,
+				ID:          jobs.ID(jobs.KindConversion, msg.path),
 				Path:        msg.path,
 				Destination: msg.destination,
 				Percent:     0,
@@ -217,26 +217,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.deleteTarget = ""
 		m.message = deleteSuccessMessage(msg.path)
 		return m, tea.Batch(m.refreshCmd())
-	case openResultMsg:
+	case actionResultMsg:
 		if msg.err != nil {
 			m.message = msg.err.Error()
 			return m, nil
 		}
-		m.message = openSuccessMessage(msg.path)
-		return m, nil
-	case revealResultMsg:
-		if msg.err != nil {
-			m.message = msg.err.Error()
-			return m, nil
-		}
-		m.message = revealSuccessMessage(msg.path)
-		return m, nil
-	case copyResultMsg:
-		if msg.err != nil {
-			m.message = msg.err.Error()
-			return m, nil
-		}
-		m.message = copySuccessMessage(msg.text, msg.file)
+		m.message = msg.message
 		return m, nil
 	}
 	return m, nil

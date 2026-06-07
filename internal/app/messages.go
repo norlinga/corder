@@ -56,18 +56,9 @@ type deleteResultMsg struct {
 	err  error
 }
 
-type openResultMsg struct {
-	path string
-	err  error
-}
-
-type revealResultMsg struct {
-	path string
-	err  error
-}
-
-type copyResultMsg struct {
-	text string
-	file bool
-	err  error
+type actionResultMsg struct {
+	actionID string
+	path     string
+	message  string
+	err      error
 }

@@ -35,8 +35,9 @@ func TestMainViewUsesConversionDestinationName(t *testing.T) {
 		}},
 	}
 	m.jobs.Set(jobs.Update{
-		ID:          "/recordings/a.wav",
 		Path:        "/recordings/a.wav",
+		Kind:        jobs.KindConversion,
+		ID:          jobs.ID(jobs.KindConversion, "/recordings/a.wav"),
 		Destination: "/recordings/a.mp3",
 		Message:     "Converting",
 		Percent:     50,

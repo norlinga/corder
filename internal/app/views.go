@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"corder/internal/jobs"
 	"corder/internal/storage"
 )
 
@@ -39,7 +40,7 @@ func (m *model) mainView() string {
 			}
 			status := m.displayStatus(rec)
 			displayName := rec.Name
-			if job, ok := m.jobs.Get(rec.Path); ok && job.Destination != "" {
+			if job, ok := m.jobs.GetByKindPath(jobs.KindConversion, rec.Path); ok && job.Destination != "" {
 				displayName = filepath.Base(job.Destination)
 			}
 			line := fmt.Sprintf("%s %-29s %-12s %-10s %-12s %s",
@@ -192,7 +193,7 @@ func (m *model) currentDeviceName() string {
 }
 
 func (m *model) displayStatus(rec storage.Recording) string {
-	if job, ok := m.jobs.Get(rec.Path); ok {
+	if job, ok := m.jobs.GetByKindPath(jobs.KindConversion, rec.Path); ok {
 		return job.DisplayStatus()
 	}
 	if m.recording && rec.Path == m.currentPath {

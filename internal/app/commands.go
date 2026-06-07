@@ -112,29 +112,11 @@ func (m *model) runConversion(source string, startedAt time.Time, duration time.
 	}
 	updates := make(chan jobs.Update, 32)
 	go func() {
-		if err := conversion.Run(ctx, job, updates); err != nil {
-			select {
-			case updates <- conversionFailureUpdate(source, dst, err):
-			default:
-			}
-		}
+		_ = conversion.Run(ctx, job, updates)
 		close(updates)
 	}()
 	for p := range updates {
 		m.updates <- jobMsg(p)
-	}
-}
-
-func conversionFailureUpdate(source string, dst string, err error) jobs.Update {
-	return jobs.Update{
-		ID:          source,
-		Kind:        jobs.KindConversion,
-		Path:        source,
-		Destination: dst,
-		Percent:     100,
-		Message:     "Conversion failed",
-		Status:      jobs.StatusFailed,
-		Err:         err,
 	}
 }
 

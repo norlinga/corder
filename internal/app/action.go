@@ -5,6 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"corder/internal/platform"
 	"corder/internal/storage"
 )
 
@@ -13,7 +14,11 @@ type fileAction struct {
 	key     string
 	label   string
 	aliases []string
-	run     func(*model, storage.Recording) tea.Cmd
+	run     func(actionRuntime, storage.Recording) tea.Cmd
+}
+
+type actionRuntime struct {
+	platform platform.OS
 }
 
 func builtinFileActions() []fileAction {
@@ -22,8 +27,8 @@ func builtinFileActions() []fileAction {
 			id:    "open",
 			key:   "enter",
 			label: "Enter: open",
-			run: func(m *model, rec storage.Recording) tea.Cmd {
-				return m.openFileCmd(rec.Path)
+			run: func(rt actionRuntime, rec storage.Recording) tea.Cmd {
+				return openFileCmd(rt, rec.Path)
 			},
 		},
 		{
@@ -31,8 +36,8 @@ func builtinFileActions() []fileAction {
 			key:     "r",
 			label:   "R: reveal",
 			aliases: []string{"R"},
-			run: func(m *model, rec storage.Recording) tea.Cmd {
-				return m.revealFileCmd(rec.Path)
+			run: func(rt actionRuntime, rec storage.Recording) tea.Cmd {
+				return revealFileCmd(rt, rec.Path)
 			},
 		},
 		{
@@ -40,8 +45,8 @@ func builtinFileActions() []fileAction {
 			key:     "p",
 			label:   "P: copy path",
 			aliases: []string{"P"},
-			run: func(m *model, rec storage.Recording) tea.Cmd {
-				return m.copyPathCmd(rec.Path)
+			run: func(rt actionRuntime, rec storage.Recording) tea.Cmd {
+				return copyPathCmd(rt, rec.Path)
 			},
 		},
 		{
@@ -49,8 +54,8 @@ func builtinFileActions() []fileAction {
 			key:     "c",
 			label:   "C: copy file",
 			aliases: []string{"C"},
-			run: func(m *model, rec storage.Recording) tea.Cmd {
-				return m.copyFileCmd(rec.Path)
+			run: func(rt actionRuntime, rec storage.Recording) tea.Cmd {
+				return copyFileCmd(rt, rec.Path)
 			},
 		},
 	}
@@ -77,7 +82,7 @@ func (m *model) handleFileActionKey(key string) (tea.Cmd, bool) {
 	if !ok {
 		return nil, true
 	}
-	return action.run(m, rec), true
+	return action.run(m.actionRuntime(), rec), true
 }
 
 func fileActionForKey(key string) (fileAction, bool) {
@@ -104,26 +109,50 @@ func fileActionFooter() string {
 	return strings.Join(labels, "  ")
 }
 
-func (m *model) openFileCmd(path string) tea.Cmd {
+func (m *model) actionRuntime() actionRuntime {
+	return actionRuntime{platform: m.platform}
+}
+
+func openFileCmd(rt actionRuntime, path string) tea.Cmd {
 	return func() tea.Msg {
-		return openResultMsg{path: path, err: m.platform.Open(path)}
+		return actionResultMsg{
+			actionID: "open",
+			path:     path,
+			message:  openSuccessMessage(path),
+			err:      rt.platform.Open(path),
+		}
 	}
 }
 
-func (m *model) revealFileCmd(path string) tea.Cmd {
+func revealFileCmd(rt actionRuntime, path string) tea.Cmd {
 	return func() tea.Msg {
-		return revealResultMsg{path: path, err: m.platform.Reveal(path)}
+		return actionResultMsg{
+			actionID: "reveal",
+			path:     path,
+			message:  revealSuccessMessage(path),
+			err:      rt.platform.Reveal(path),
+		}
 	}
 }
 
-func (m *model) copyPathCmd(path string) tea.Cmd {
+func copyPathCmd(rt actionRuntime, path string) tea.Cmd {
 	return func() tea.Msg {
-		return copyResultMsg{text: path, err: m.platform.CopyToClipboard(path)}
+		return actionResultMsg{
+			actionID: "copy-path",
+			path:     path,
+			message:  copySuccessMessage(path, false),
+			err:      rt.platform.CopyToClipboard(path),
+		}
 	}
 }
 
-func (m *model) copyFileCmd(path string) tea.Cmd {
+func copyFileCmd(rt actionRuntime, path string) tea.Cmd {
 	return func() tea.Msg {
-		return copyResultMsg{text: path, file: true, err: m.platform.CopyFileReference(path)}
+		return actionResultMsg{
+			actionID: "copy-file",
+			path:     path,
+			message:  copySuccessMessage(path, true),
+			err:      rt.platform.CopyFileReference(path),
+		}
 	}
 }

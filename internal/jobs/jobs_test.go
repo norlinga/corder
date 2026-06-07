@@ -41,3 +41,18 @@ func TestTracker(t *testing.T) {
 		t.Fatalf("Len after delete = %d, want 0", tracker.Len())
 	}
 }
+
+func TestTrackerDefaultsNamespacedID(t *testing.T) {
+	tracker := NewTracker()
+	update := Update{Kind: KindConversion, Path: "/recordings/a.wav", Status: StatusQueued}
+
+	tracker.Set(update)
+
+	got, ok := tracker.Get(ID(KindConversion, "/recordings/a.wav"))
+	if !ok {
+		t.Fatal("namespaced update not found")
+	}
+	if got.ID != ID(KindConversion, "/recordings/a.wav") {
+		t.Fatalf("ID = %q", got.ID)
+	}
+}

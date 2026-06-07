@@ -24,7 +24,7 @@ func TestDisplayStatusPrefersTransientConversionState(t *testing.T) {
 	m := &model{
 		jobs: jobs.NewTracker(),
 	}
-	m.jobs.Set(jobs.Update{ID: rec.Path, Kind: jobs.KindConversion, Path: rec.Path, Message: "Converting", Percent: 37, Status: jobs.StatusRunning})
+	m.jobs.Set(jobs.Update{Kind: jobs.KindConversion, ID: jobs.ID(jobs.KindConversion, rec.Path), Path: rec.Path, Message: "Converting", Percent: 37, Status: jobs.StatusRunning})
 
 	if got := m.displayStatus(rec); got != "Converting 37%" {
 		t.Fatalf("displayStatus = %q, want Converting 37%%", got)
@@ -153,7 +153,7 @@ func TestUpdateRecordStoppedQueuesConversion(t *testing.T) {
 	if m.message != "Converting to MP3" {
 		t.Fatalf("message = %q, want Converting to MP3", m.message)
 	}
-	progress, ok := m.jobs.Get("/recordings/a.wav")
+	progress, ok := m.jobs.Get(jobs.ID(jobs.KindConversion, "/recordings/a.wav"))
 	if !ok {
 		t.Fatal("conversion job not queued")
 	}
@@ -234,8 +234,8 @@ func TestUpdateLevelOnlyAppliesCurrentRecording(t *testing.T) {
 func TestUpdateConversionProgressAndDone(t *testing.T) {
 	m := &model{jobs: jobs.NewTracker()}
 	progress := jobs.Update{
-		ID:          "/recordings/a.wav",
 		Kind:        jobs.KindConversion,
+		ID:          jobs.ID(jobs.KindConversion, "/recordings/a.wav"),
 		Path:        "/recordings/a.wav",
 		Destination: "/recordings/a.mp3",
 		Percent:     37,
@@ -494,22 +494,22 @@ func TestDeleteResultErrorStaysInDeleteView(t *testing.T) {
 func TestOpenAndCopyResultMessages(t *testing.T) {
 	m := &model{}
 
-	_, _ = m.Update(openResultMsg{path: "/recordings/a.mp3"})
+	_, _ = m.Update(actionResultMsg{actionID: "open", path: "/recordings/a.mp3", message: openSuccessMessage("/recordings/a.mp3")})
 	if m.message != "Opened a.mp3" {
 		t.Fatalf("open message = %q", m.message)
 	}
 
-	_, _ = m.Update(revealResultMsg{path: "/recordings/a.mp3"})
+	_, _ = m.Update(actionResultMsg{actionID: "reveal", path: "/recordings/a.mp3", message: revealSuccessMessage("/recordings/a.mp3")})
 	if m.message != "Revealed a.mp3" {
 		t.Fatalf("reveal message = %q", m.message)
 	}
 
-	_, _ = m.Update(copyResultMsg{text: "/recordings/a.mp3"})
+	_, _ = m.Update(actionResultMsg{actionID: "copy-path", path: "/recordings/a.mp3", message: copySuccessMessage("/recordings/a.mp3", false)})
 	if m.message != "Copied path" {
 		t.Fatalf("copy message = %q", m.message)
 	}
 
-	_, _ = m.Update(copyResultMsg{text: "/recordings/a.mp3", file: true})
+	_, _ = m.Update(actionResultMsg{actionID: "copy-file", path: "/recordings/a.mp3", message: copySuccessMessage("/recordings/a.mp3", true)})
 	if m.message != "Copied file a.mp3" {
 		t.Fatalf("copy file message = %q", m.message)
 	}
@@ -518,17 +518,17 @@ func TestOpenAndCopyResultMessages(t *testing.T) {
 func TestOpenAndCopyResultErrors(t *testing.T) {
 	m := &model{}
 
-	_, _ = m.Update(openResultMsg{path: "/recordings/a.mp3", err: errors.New("open failed")})
+	_, _ = m.Update(actionResultMsg{actionID: "open", path: "/recordings/a.mp3", err: errors.New("open failed")})
 	if m.message != "open failed" {
 		t.Fatalf("open error message = %q", m.message)
 	}
 
-	_, _ = m.Update(revealResultMsg{path: "/recordings/a.mp3", err: errors.New("reveal failed")})
+	_, _ = m.Update(actionResultMsg{actionID: "reveal", path: "/recordings/a.mp3", err: errors.New("reveal failed")})
 	if m.message != "reveal failed" {
 		t.Fatalf("reveal error message = %q", m.message)
 	}
 
-	_, _ = m.Update(copyResultMsg{text: "/recordings/a.mp3", err: errors.New("copy failed")})
+	_, _ = m.Update(actionResultMsg{actionID: "copy-path", path: "/recordings/a.mp3", err: errors.New("copy failed")})
 	if m.message != "copy failed" {
 		t.Fatalf("copy error message = %q", m.message)
 	}
@@ -549,12 +549,12 @@ func TestHandleMainRevealDispatchesCommand(t *testing.T) {
 		t.Fatal("expected reveal command")
 	}
 	msg := cmd()
-	result, ok := msg.(revealResultMsg)
+	result, ok := msg.(actionResultMsg)
 	if !ok {
-		t.Fatalf("message = %T, want revealResultMsg", msg)
+		t.Fatalf("message = %T, want actionResultMsg", msg)
 	}
-	if result.err != nil {
-		t.Fatalf("reveal error = %v", result.err)
+	if result.actionID != "reveal" || result.err != nil {
+		t.Fatalf("reveal result = %+v", result)
 	}
 	if runner.startedName != "xdg-open" || len(runner.startedArgs) != 1 || runner.startedArgs[0] != "/recordings" {
 		t.Fatalf("started = %q %#v", runner.startedName, runner.startedArgs)
