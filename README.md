@@ -6,6 +6,8 @@ The app uses Bubble Tea for the terminal interface, PortAudio for audio capture,
 
 Build and development notes are in [BUILD.md](BUILD.md).
 
+Corder is extendable with executable plugins that add actions for selected recordings, such as transcription or upload workflows. See [EXTENDING.md](EXTENDING.md) for the plugin manifest format and execution protocol.
+
 ## License
 
 Corder is licensed under the MIT License. See [LICENSE](LICENSE).
