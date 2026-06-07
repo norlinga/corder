@@ -46,17 +46,7 @@ func DestFor(source string) string {
 }
 
 func Run(ctx context.Context, job Job, updates chan<- Progress) error {
-	args := []string{
-		"-y",
-		"-hide_banner",
-		"-loglevel", "error",
-		"-i", job.Source,
-		"-b:a", fmt.Sprintf("%dk", job.BitrateKbps),
-		"-progress", "pipe:1",
-		"-nostats",
-		job.Destination,
-	}
-	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
+	cmd := exec.CommandContext(ctx, "ffmpeg", ffmpegArgs(job)...)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -72,25 +62,7 @@ func Run(ctx context.Context, job Job, updates chan<- Progress) error {
 	case updates <- Progress{Source: job.Source, Destination: job.Destination, Percent: 0, Message: "Converting"}:
 	default:
 	}
-	go func() {
-		scanner := bufio.NewScanner(stdout)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if strings.HasPrefix(line, "out_time_ms=") {
-				n, err := strconv.ParseInt(strings.TrimPrefix(line, "out_time_ms="), 10, 64)
-				if err == nil && job.Duration > 0 {
-					pct := (float64(n) / 1000000.0) / job.Duration.Seconds() * 100
-					if pct > 99.0 {
-						pct = 99.0
-					}
-					select {
-					case updates <- Progress{Source: job.Source, Destination: job.Destination, Percent: pct, Message: "Converting"}:
-					default:
-					}
-				}
-			}
-		}
-	}()
+	go streamProgress(stdout, job, updates)
 	errData, _ := io.ReadAll(stderr)
 	waitErr := cmd.Wait()
 	if waitErr != nil {
@@ -103,27 +75,85 @@ func Run(ctx context.Context, job Job, updates chan<- Progress) error {
 		}
 		return waitErr
 	}
-	if !job.RetainWAV {
-		if err := os.Remove(job.Source); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
-		}
-		if err := storage.DeleteMeta(job.Source); err != nil {
-			return err
-		}
-	}
 	convertedAt := time.Now()
-	_ = storage.WriteMeta(job.Destination, storage.Meta{
-		CreatedAt:             convertedAt,
+	createdAt := job.StartedAt
+	if createdAt.IsZero() {
+		createdAt = convertedAt
+	}
+	if err := storage.WriteMeta(job.Destination, storage.Meta{
+		CreatedAt:             createdAt,
 		DurationSeconds:       job.Duration.Seconds(),
-		Status:                "ready",
+		Status:                storage.StatusReady,
 		MP3BitrateKbps:        job.BitrateKbps,
 		RetainWAVAfterConvert: job.RetainWAV,
 		ConvertedAt:           &convertedAt,
 		SourceWAV:             job.Source,
-	})
+	}); err != nil {
+		return err
+	}
+	if !job.RetainWAV {
+		if sourceHasDistinctMeta(job) {
+			return storage.DeleteRecording(job.Source)
+		}
+		if err := os.Remove(job.Source); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
 	select {
 	case updates <- Progress{Source: job.Source, Destination: job.Destination, Percent: 100, Done: true, Message: "Saved"}:
 	default:
 	}
 	return nil
+}
+
+func sourceHasDistinctMeta(job Job) bool {
+	if job.Source == "" || job.Destination == "" {
+		return false
+	}
+	return storage.MetaPathFor(job.Source) != storage.MetaPathFor(job.Destination)
+}
+
+func ffmpegArgs(job Job) []string {
+	return []string{
+		"-y",
+		"-hide_banner",
+		"-loglevel", "error",
+		"-i", job.Source,
+		"-b:a", fmt.Sprintf("%dk", job.BitrateKbps),
+		"-progress", "pipe:1",
+		"-nostats",
+		job.Destination,
+	}
+}
+
+func streamProgress(r io.Reader, job Job, updates chan<- Progress) {
+	scanner := bufio.NewScanner(r)
+	for scanner.Scan() {
+		pct, ok := progressPercent(scanner.Text(), job.Duration)
+		if !ok {
+			continue
+		}
+		select {
+		case updates <- Progress{Source: job.Source, Destination: job.Destination, Percent: pct, Message: "Converting"}:
+		default:
+		}
+	}
+}
+
+func progressPercent(line string, duration time.Duration) (float64, bool) {
+	if duration <= 0 || !strings.HasPrefix(line, "out_time_ms=") {
+		return 0, false
+	}
+	n, err := strconv.ParseInt(strings.TrimPrefix(line, "out_time_ms="), 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	pct := (float64(n) / 1000000.0) / duration.Seconds() * 100
+	if pct > 99.0 {
+		pct = 99.0
+	}
+	if pct < 0 {
+		pct = 0
+	}
+	return pct, true
 }

@@ -82,6 +82,7 @@ func (b *Backend) Diagnostics() (Diagnostics, error) {
 		info.Devices = append(info.Devices, Device{
 			Index:                  d.Index,
 			Name:                   d.Name,
+			HostAPIName:            hostAPIName(d),
 			MaxInputChannels:       d.MaxInputChannels,
 			DefaultSampleRate:      d.DefaultSampleRate,
 			DefaultLowInputLatency: d.DefaultLowInputLatency,
@@ -107,15 +108,15 @@ func (b *Backend) Probe(deviceName string, reads int) (ProbeResult, error) {
 		sampleRate = 44100
 	}
 	channels := 1
-	params := portaudio.LowLatencyParameters(device.pa, nil)
+	params := portaudio.HighLatencyParameters(device.pa, nil)
 	params.Input.Channels = channels
 	params.SampleRate = float64(sampleRate)
-	params.FramesPerBuffer = 2048
+	params.FramesPerBuffer = captureFramesPerBuffer
 	result := ProbeResult{
 		DeviceName:      device.Name,
 		SampleRate:      float64(sampleRate),
 		Channels:        channels,
-		FramesPerBuffer: 2048,
+		FramesPerBuffer: captureFramesPerBuffer,
 	}
 	var mu sync.Mutex
 	var stream *portaudio.Stream
@@ -147,7 +148,7 @@ func (b *Backend) Probe(deviceName string, reads int) (ProbeResult, error) {
 	mu.Lock()
 	result.Duration = time.Since(start)
 	if result.Reads > 0 {
-		result.MeanAbs = result.MeanAbs / float64(result.Reads*channels*2048)
+		result.MeanAbs = result.MeanAbs / float64(result.Reads*channels*captureFramesPerBuffer)
 	}
 	result.NonZero = result.Peak > 0
 	mu.Unlock()
@@ -167,7 +168,11 @@ func (d Diagnostics) Format() string {
 	}
 	b.WriteString("Input devices:\n")
 	for _, dev := range d.Devices {
-		b.WriteString(fmt.Sprintf("  - [%d] %s (%d ch, %.0f Hz)\n", dev.Index, dev.Name, dev.MaxInputChannels, dev.DefaultSampleRate))
+		host := ""
+		if dev.HostAPIName != "" {
+			host = fmt.Sprintf(", %s", dev.HostAPIName)
+		}
+		b.WriteString(fmt.Sprintf("  - [%d] %s (%d ch, %.0f Hz%s)\n", dev.Index, dev.Name, dev.MaxInputChannels, dev.DefaultSampleRate, host))
 	}
 	if d.BackendLog != "" {
 		b.WriteString("Backend probe log: captured\n")

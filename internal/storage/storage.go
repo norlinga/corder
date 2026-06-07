@@ -14,13 +14,33 @@ import (
 	"time"
 )
 
+var ErrDestinationExists = errors.New("destination already exists")
+
+type Status string
+
+const (
+	StatusRecording   Status = "recording"
+	StatusConverting  Status = "converting"
+	StatusReady       Status = "ready"
+	StatusEmpty       Status = "empty"
+	StatusInterrupted Status = "Interrupted"
+)
+
+func (s Status) String() string {
+	return string(s)
+}
+
+func (s Status) IsActive() bool {
+	return s == StatusRecording || s == StatusConverting
+}
+
 type Meta struct {
 	Version               int        `json:"version"`
 	CreatedAt             time.Time  `json:"created_at"`
 	SampleRate            float64    `json:"sample_rate"`
 	Channels              int        `json:"channels"`
 	DurationSeconds       float64    `json:"duration_seconds"`
-	Status                string     `json:"status"`
+	Status                Status     `json:"status"`
 	MP3BitrateKbps        int        `json:"mp3_bitrate_kbps"`
 	RetainWAVAfterConvert bool       `json:"retain_wav_after_convert"`
 	ConvertedAt           *time.Time `json:"converted_at,omitempty"`
@@ -34,7 +54,7 @@ type Recording struct {
 	Duration    time.Duration
 	Size        int64
 	CreatedAt   time.Time
-	Status      string
+	Status      Status
 	ProgressPct float64
 }
 
@@ -55,14 +75,31 @@ func EnsureDir(dir string) error {
 func WriteMeta(audioPath string, meta Meta) error {
 	meta.Version = 1
 	metaPath := MetaPathFor(audioPath)
-	if err := os.MkdirAll(filepath.Dir(metaPath), 0o755); err != nil {
+	dir := filepath.Dir(metaPath)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
 	data, err := json.MarshalIndent(meta, "", "  ")
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(metaPath, data, 0o644)
+	tmp, err := os.CreateTemp(dir, "."+filepath.Base(metaPath)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	defer func() { _ = os.Remove(tmpPath) }()
+	if _, err := tmp.Write(data); err != nil {
+		_ = tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmpPath, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmpPath, metaPath)
 }
 
 func ReadMeta(audioPath string) (Meta, error) {
@@ -86,15 +123,38 @@ func DeleteMeta(audioPath string) error {
 	return nil
 }
 
+func DeleteRecording(audioPath string) error {
+	if err := os.Remove(audioPath); err != nil && !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	return DeleteMeta(audioPath)
+}
+
 func RenameWithMeta(oldPath, newPath string) error {
-	if err := os.Rename(oldPath, newPath); err != nil {
+	if oldPath == newPath {
+		return nil
+	}
+	if _, err := os.Stat(newPath); err == nil {
+		return fmt.Errorf("%w: %s", ErrDestinationExists, newPath)
+	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
 	oldMeta := MetaPathFor(oldPath)
 	newMeta := MetaPathFor(newPath)
+	if oldMeta != newMeta {
+		if _, err := os.Stat(newMeta); err == nil {
+			return fmt.Errorf("%w: %s", ErrDestinationExists, newMeta)
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return err
+		}
+	}
+	if err := os.Rename(oldPath, newPath); err != nil {
+		return err
+	}
 	if _, err := os.Stat(oldMeta); err == nil {
 		if err := os.Rename(oldMeta, newMeta); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return err
+			rollbackErr := os.Rename(newPath, oldPath)
+			return errors.Join(err, rollbackErr)
 		}
 	}
 	return nil
@@ -133,11 +193,9 @@ func Scan(dir string) ([]Recording, error) {
 				rec.Duration = time.Duration(meta.DurationSeconds * float64(time.Second))
 			}
 			if meta.Status != "" {
-				switch meta.Status {
-				case "recording", "converting":
-					rec.Status = "Interrupted"
-				default:
-					rec.Status = meta.Status
+				rec.Status = meta.Status
+				if meta.Status.IsActive() {
+					rec.Status = StatusInterrupted
 				}
 			}
 		}
@@ -146,7 +204,7 @@ func Scan(dir string) ([]Recording, error) {
 				rec.Duration = dur
 			}
 		}
-		rec.Status = strings.TrimSpace(rec.Status)
+		rec.Status = Status(strings.TrimSpace(rec.Status.String()))
 		recs = append(recs, rec)
 		return nil
 	})

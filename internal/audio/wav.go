@@ -12,6 +12,7 @@ type wavWriter struct {
 	sampleRate int
 	channels   int
 	dataBytes  int64
+	buf        []byte
 }
 
 func newWAVWriter(path string, sampleRate int, channels int) (*wavWriter, error) {
@@ -48,7 +49,11 @@ func (w *wavWriter) writeHeader() error {
 }
 
 func (w *wavWriter) WriteFloat32Interleaved(samples []float32) error {
-	buf := make([]byte, len(samples)*2)
+	need := len(samples) * 2
+	if cap(w.buf) < need {
+		w.buf = make([]byte, need)
+	}
+	buf := w.buf[:need]
 	for i, sample := range samples {
 		clamped := math.Max(-1, math.Min(1, float64(sample)))
 		v := int16(math.Round(clamped * 32767))

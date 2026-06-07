@@ -4,10 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -17,6 +14,8 @@ import (
 
 	"corder/internal/audio"
 	"corder/internal/conversion"
+	"corder/internal/platform"
+	"corder/internal/recording"
 	"corder/internal/settings"
 	"corder/internal/storage"
 )
@@ -62,8 +61,9 @@ type diagnosticMsg struct {
 	err   error
 }
 type recordStartedMsg struct {
-	session *audio.Session
-	path    string
+	session    recording.Session
+	path       string
+	deviceName string
 }
 type recordStoppedMsg struct {
 	path        string
@@ -71,6 +71,24 @@ type recordStoppedMsg struct {
 	duration    time.Duration
 	queued      bool
 	err         error
+}
+type renameResultMsg struct {
+	oldPath string
+	newPath string
+	err     error
+}
+type deleteResultMsg struct {
+	path string
+	err  error
+}
+type openResultMsg struct {
+	path string
+	err  error
+}
+type copyResultMsg struct {
+	text string
+	file bool
+	err  error
 }
 
 type model struct {
@@ -88,12 +106,14 @@ type model struct {
 	deviceIndex   int
 	recording     bool
 	paused        bool
-	session       *audio.Session
+	session       recording.Session
 	currentPath   string
 	levelDB       float64
 	peakDB        float64
 	clipping      bool
 	overflow      bool
+	captureStats  audio.CaptureStats
+	lastCapture   audio.CaptureStats
 	lastUpdate    time.Time
 	converting    map[string]conversion.Progress
 	diagnostics   audio.Diagnostics
@@ -101,6 +121,8 @@ type model struct {
 	diagnosticErr error
 	diagnosticRun bool
 	updates       chan tea.Msg
+	workflow      recording.Workflow
+	platform      platform.OS
 	editing       string
 	editBuffer    []rune
 	deleteTarget  string
@@ -113,11 +135,19 @@ func Run() error {
 	if err != nil {
 		return err
 	}
+	backend := &audio.Backend{}
 	m := &model{
 		cfg:        cfg,
-		backend:    &audio.Backend{},
+		backend:    backend,
 		converting: map[string]conversion.Progress{},
 		updates:    make(chan tea.Msg, 128),
+		platform:   platform.New(),
+		workflow: recording.Workflow{
+			Recorder:  audioRecorder{backend: backend},
+			Converter: recording.SystemConverter{},
+			Store:     recording.SystemStore{},
+			Clock:     recording.SystemClock{},
+		},
 	}
 	p := tea.NewProgram(m, tea.WithAltScreen())
 	if _, err := p.Run(); err != nil {
@@ -174,6 +204,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.clipping = lev.Clipping
 			m.paused = lev.Paused
 			m.overflow = lev.Overflow
+			m.captureStats = lev.Stats
+			m.lastCapture = lev.Stats
 		}
 		return m, m.listenUpdatesCmd()
 	case conversionMsg:
@@ -202,13 +234,20 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.recording = true
 		m.paused = false
 		m.overflow = false
+		m.captureStats = audio.CaptureStats{}
+		m.lastCapture = audio.CaptureStats{}
 		m.currentPath = msg.path
+		m.cfg.InputDeviceName = msg.deviceName
 		m.message = "Recording"
 		return m, tea.Batch(m.listenUpdatesCmd(), m.refreshCmd())
 	case recordStoppedMsg:
 		m.recording = false
 		m.paused = false
 		m.overflow = false
+		if m.captureStats.FramesCaptured > 0 || m.captureStats.Callbacks > 0 {
+			m.lastCapture = m.captureStats
+		}
+		m.captureStats = audio.CaptureStats{}
 		m.stopRequested = false
 		m.session = nil
 		m.currentPath = ""
@@ -228,6 +267,43 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.message = "Saved WAV"
 		}
 		return m, tea.Batch(m.listenUpdatesCmd(), m.refreshCmd())
+	case renameResultMsg:
+		if msg.err != nil {
+			m.message = msg.err.Error()
+			return m, nil
+		}
+		m.screen = screenMain
+		m.editing = ""
+		m.editBuffer = nil
+		m.message = fmt.Sprintf("✓ Renamed to %s", filepath.Base(msg.newPath))
+		return m, tea.Batch(m.refreshCmd())
+	case deleteResultMsg:
+		if msg.err != nil {
+			m.message = msg.err.Error()
+			return m, nil
+		}
+		m.screen = screenMain
+		m.deleteTarget = ""
+		m.message = fmt.Sprintf("✓ Deleted %s", filepath.Base(msg.path))
+		return m, tea.Batch(m.refreshCmd())
+	case openResultMsg:
+		if msg.err != nil {
+			m.message = msg.err.Error()
+			return m, nil
+		}
+		m.message = fmt.Sprintf("Opened %s", filepath.Base(msg.path))
+		return m, nil
+	case copyResultMsg:
+		if msg.err != nil {
+			m.message = msg.err.Error()
+			return m, nil
+		}
+		if msg.file {
+			m.message = fmt.Sprintf("Copied file %s", filepath.Base(msg.text))
+		} else {
+			m.message = "Copied path"
+		}
+		return m, nil
 	}
 	return m, nil
 }
@@ -264,7 +340,7 @@ func (m *model) handleMainKey(key string) (tea.Model, tea.Cmd) {
 		if len(m.records) == 0 {
 			return m, nil
 		}
-		return m, openFileCmd(m.records[m.selected].Path)
+		return m, m.openFileCmd(m.records[m.selected].Path)
 	case "s":
 		m.screen = screenSettings
 		m.message = "Settings"
@@ -283,6 +359,7 @@ func (m *model) handleMainKey(key string) (tea.Model, tea.Cmd) {
 		m.screen = screenRename
 		m.editing = m.records[m.selected].Name
 		m.editBuffer = []rune(strings.TrimSuffix(m.records[m.selected].Name, filepath.Ext(m.records[m.selected].Name)))
+		m.message = ""
 		return m, nil
 	case "d":
 		if len(m.records) == 0 {
@@ -290,12 +367,18 @@ func (m *model) handleMainKey(key string) (tea.Model, tea.Cmd) {
 		}
 		m.screen = screenDeleteConfirm
 		m.deleteTarget = m.records[m.selected].Path
+		m.message = ""
 		return m, nil
+	case "p":
+		if len(m.records) == 0 {
+			return m, nil
+		}
+		return m, m.copyPathCmd(m.records[m.selected].Path)
 	case "c":
 		if len(m.records) == 0 {
 			return m, nil
 		}
-		return m, copyPathCmd(m.records[m.selected].Path)
+		return m, m.copyFileCmd(m.records[m.selected].Path)
 	case " ":
 		if m.recording {
 			if m.session == nil {
@@ -311,7 +394,7 @@ func (m *model) handleMainKey(key string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.startRecordingCmd()
-	case "esc":
+	case "esc", "x":
 		if m.recording && m.session != nil {
 			if m.stopRequested {
 				return m, nil
@@ -427,8 +510,8 @@ func (m *model) handleRenameKey(key string) (tea.Model, tea.Cmd) {
 		return m, nil
 	case "enter":
 		newName := strings.TrimSpace(string(m.editBuffer))
-		if newName == "" {
-			m.message = "Name cannot be empty"
+		if err := validateRenameInput(newName); err != nil {
+			m.message = err.Error()
 			return m, nil
 		}
 		return m, renameCmd(m.records[m.selected].Path, newName)
@@ -450,8 +533,6 @@ func (m *model) handleDeleteKey(key string) (tea.Model, tea.Cmd) {
 	switch key {
 	case "y", "enter":
 		target := m.deleteTarget
-		m.screen = screenMain
-		m.deleteTarget = ""
 		return m, deleteCmd(target)
 	case "n", "esc":
 		m.screen = screenMain
@@ -490,20 +571,10 @@ func (m *model) mainView() string {
 			if i == m.selected {
 				prefix = ">"
 			}
-			status := rec.Status
-			if p, ok := m.converting[rec.Path]; ok {
-				status = fmt.Sprintf("%s %.0f%%", p.Message, p.Percent)
-			}
+			status := m.displayStatus(rec)
 			displayName := rec.Name
 			if p, ok := m.converting[rec.Path]; ok && p.Destination != "" {
 				displayName = filepath.Base(p.Destination)
-			}
-			if status == "" && m.recording && rec.Path == m.currentPath {
-				if m.paused {
-					status = "Paused"
-				} else {
-					status = "Recording"
-				}
 			}
 			line := fmt.Sprintf("%s %-29s %-12s %-10s %-12s %s",
 				prefix,
@@ -526,7 +597,7 @@ func (m *model) mainView() string {
 	b.WriteString(panelStyle.Render(m.statusArea()))
 	b.WriteString("\n")
 	b.WriteString("\n")
-	b.WriteString(footerStyle.Render("Space: start/pause  Esc: stop  Enter: open  N: rename  D: delete  C: copy path  S: settings  I: diagnostics  Q: quit"))
+	b.WriteString(footerStyle.Render("Space: start/pause  Esc/X: stop  Enter: open  N: rename  D: delete  P: copy path  C: copy file  S: settings  I: diagnostics  Q: quit"))
 	b.WriteString("\n")
 	return b.String()
 }
@@ -570,6 +641,10 @@ func (m *model) diagnosticsView() string {
 		b.WriteString("\nProbe:\n")
 		b.WriteString(m.probe.Format())
 	}
+	if m.lastCapture.Callbacks > 0 {
+		b.WriteString("\nLast recording capture:\n")
+		b.WriteString(formatCaptureStats(m.lastCapture))
+	}
 	b.WriteString("\nEsc: back  R: rerun probe\n")
 	return b.String()
 }
@@ -581,6 +656,10 @@ func (m *model) renameView() string {
 	b.WriteString(strings.Repeat("-", 40))
 	b.WriteString("\n")
 	b.WriteString(fmt.Sprintf("New name: %s\n", name))
+	if m.message != "" {
+		b.WriteString(statusBadge(m.message))
+		b.WriteString("\n")
+	}
 	b.WriteString("Enter to save, Esc to cancel\n")
 	return b.String()
 }
@@ -591,6 +670,10 @@ func (m *model) deleteView() string {
 	b.WriteString(strings.Repeat("-", 40))
 	b.WriteString("\n")
 	b.WriteString(fmt.Sprintf("%s\n", m.deleteTarget))
+	if m.message != "" {
+		b.WriteString(statusBadge(m.message))
+		b.WriteString("\n")
+	}
 	b.WriteString("[y/N]\n")
 	return b.String()
 }
@@ -612,6 +695,9 @@ func (m *model) statusArea() string {
 		if m.overflow {
 			lines = append(lines, warningStyle.Render("Input overflow"))
 		}
+		if m.captureStats.HasIssues() {
+			lines = append(lines, warningStyle.Render(captureIssueSummary(m.captureStats)))
+		}
 		lines = append(lines, m.levelMeter())
 	} else if m.message != "" {
 		lines = append(lines, statusBadge(m.message))
@@ -619,6 +705,39 @@ func (m *model) statusArea() string {
 		lines = append(lines, statusBadge("Ready"))
 	}
 	return strings.Join(lines, "\n")
+}
+
+func captureIssueSummary(stats audio.CaptureStats) string {
+	return fmt.Sprintf("Capture stats: port overflows %d, dropped buffers %d, queue peak %s",
+		stats.PortOverflow,
+		stats.DroppedBuffers,
+		stats.QueueSummary(),
+	)
+}
+
+func formatCaptureStats(stats audio.CaptureStats) string {
+	var b strings.Builder
+	b.WriteString(fmt.Sprintf("Device: %s\n", fallbackDisplay(stats.DeviceName)))
+	if stats.HostAPIName != "" {
+		b.WriteString(fmt.Sprintf("Host API: %s\n", stats.HostAPIName))
+	}
+	b.WriteString(fmt.Sprintf("Sample rate: %d Hz\n", stats.SampleRate))
+	b.WriteString(fmt.Sprintf("Channels: %d\n", stats.Channels))
+	b.WriteString(fmt.Sprintf("Frames/buffer: %d\n", stats.FramesPerBuffer))
+	b.WriteString(fmt.Sprintf("Buffer capacity: %d\n", stats.BufferCapacity))
+	b.WriteString(fmt.Sprintf("Callbacks: %d\n", stats.Callbacks))
+	b.WriteString(fmt.Sprintf("Frames captured: %d\n", stats.FramesCaptured))
+	b.WriteString(fmt.Sprintf("PortAudio overflows: %d\n", stats.PortOverflow))
+	b.WriteString(fmt.Sprintf("Dropped buffers: %d\n", stats.DroppedBuffers))
+	b.WriteString(fmt.Sprintf("Queue peak: %s\n", stats.QueueSummary()))
+	return b.String()
+}
+
+func fallbackDisplay(s string) string {
+	if s == "" {
+		return "(unknown)"
+	}
+	return s
 }
 
 func (m *model) levelMeter() string {
@@ -694,20 +813,22 @@ func (m *model) currentDeviceName() string {
 }
 
 func (m *model) applyStatuses() {
-	for i := range m.records {
-		if p, ok := m.converting[m.records[i].Path]; ok {
-			m.records[i].Status = fmt.Sprintf("%s %.0f%%", p.Message, p.Percent)
-		}
-		if m.recording && m.records[i].Path == m.currentPath {
-			if m.stopRequested {
-				m.records[i].Status = "Finalizing"
-			} else if m.paused {
-				m.records[i].Status = "Paused"
-			} else {
-				m.records[i].Status = "Recording"
-			}
-		}
+}
+
+func (m *model) displayStatus(rec storage.Recording) string {
+	if p, ok := m.converting[rec.Path]; ok {
+		return fmt.Sprintf("%s %.0f%%", p.Message, p.Percent)
 	}
+	if m.recording && rec.Path == m.currentPath {
+		if m.stopRequested {
+			return "Finalizing"
+		}
+		if m.paused {
+			return "Paused"
+		}
+		return "Recording"
+	}
+	return rec.Status.String()
 }
 
 func (m *model) refreshCmd() tea.Cmd {
@@ -759,17 +880,11 @@ func (m *model) loadDiagnosticsCmd() tea.Cmd {
 
 func (m *model) startRecordingCmd() tea.Cmd {
 	return func() tea.Msg {
-		if err := storage.EnsureDir(m.cfg.RecordingDir); err != nil {
-			return recordStoppedMsg{err: err}
-		}
-		device, err := m.backend.ResolveDevice(m.cfg.InputDeviceName)
-		if err != nil {
-			return recordStoppedMsg{err: err}
-		}
-		name := time.Now().Format("2006-01-02_150405") + ".wav"
-		path := filepath.Join(m.cfg.RecordingDir, name)
 		audioUpdates := make(chan audio.LevelUpdate, 128)
-		sess, err := m.backend.StartRecording(*device, path, m.cfg.MP3BitrateKbps, m.cfg.RetainWAVAfterConvert, audioUpdates)
+		result, err := m.workflow.Start(recording.StartRequest{
+			Config:  m.cfg,
+			Updates: audioUpdates,
+		})
 		if err != nil {
 			close(audioUpdates)
 			return recordStoppedMsg{err: err}
@@ -779,17 +894,7 @@ func (m *model) startRecordingCmd() tea.Cmd {
 				m.updates <- levelMsg(upd)
 			}
 		}()
-		meta := storage.Meta{
-			CreatedAt:             time.Now(),
-			SampleRate:            float64(sess.SampleRate),
-			Channels:              sess.Channels,
-			DurationSeconds:       0,
-			Status:                "recording",
-			MP3BitrateKbps:        m.cfg.MP3BitrateKbps,
-			RetainWAVAfterConvert: m.cfg.RetainWAVAfterConvert,
-		}
-		_ = storage.WriteMeta(path, meta)
-		return recordStartedMsg{session: sess, path: path}
+		return recordStartedMsg{session: result.Session, path: result.Path, deviceName: result.DeviceName}
 	}
 }
 
@@ -798,46 +903,27 @@ func (m *model) stopRecordingCmd() tea.Cmd {
 		if m.session == nil {
 			return recordStoppedMsg{}
 		}
-		path := m.currentPath
-		destination := conversion.DestFor(path)
-		duration := m.session.Duration()
-		if err := m.session.Stop(); err != nil {
-			return recordStoppedMsg{path: path, duration: duration, err: err}
-		}
-		_ = storage.WriteMeta(path, storage.Meta{
-			CreatedAt:             time.Now(),
-			SampleRate:            float64(m.session.SampleRate),
-			Channels:              m.session.Channels,
-			DurationSeconds:       duration.Seconds(),
-			Status:                "converting",
-			MP3BitrateKbps:        m.cfg.MP3BitrateKbps,
-			RetainWAVAfterConvert: m.cfg.RetainWAVAfterConvert,
-			SourceWAV:             path,
+		result, err := m.workflow.Stop(recording.StopRequest{
+			Session: m.session,
+			Config:  m.cfg,
 		})
-		if err := conversion.CheckFFmpeg(); err != nil {
-			_ = storage.WriteMeta(path, storage.Meta{
-				CreatedAt:             time.Now(),
-				SampleRate:            float64(m.session.SampleRate),
-				Channels:              m.session.Channels,
-				DurationSeconds:       duration.Seconds(),
-				Status:                "ready",
-				MP3BitrateKbps:        m.cfg.MP3BitrateKbps,
-				RetainWAVAfterConvert: m.cfg.RetainWAVAfterConvert,
-				SourceWAV:             path,
-			})
-			return recordStoppedMsg{path: path, duration: duration, err: err}
+		if err != nil {
+			return recordStoppedMsg{path: result.Path, duration: result.Duration, err: err}
 		}
-		go m.runConversion(path, duration, m.cfg.MP3BitrateKbps, m.cfg.RetainWAVAfterConvert)
-		return recordStoppedMsg{path: path, destination: destination, duration: duration, queued: true}
+		if result.Queue {
+			go m.runConversion(result.Path, result.StartedAt, result.Duration, result.BitrateKbps, result.RetainWAV)
+		}
+		return recordStoppedMsg{path: result.Path, destination: result.Destination, duration: result.Duration, queued: result.Queue}
 	}
 }
 
-func (m *model) runConversion(source string, duration time.Duration, bitrate int, retainWAV bool) {
+func (m *model) runConversion(source string, startedAt time.Time, duration time.Duration, bitrate int, retainWAV bool) {
 	ctx := context.Background()
 	dst := conversion.DestFor(source)
 	job := conversion.Job{
 		Source:      source,
 		Destination: dst,
+		StartedAt:   startedAt,
 		Duration:    duration,
 		BitrateKbps: bitrate,
 		RetainWAV:   retainWAV,
@@ -859,77 +945,79 @@ func (m *model) runConversion(source string, duration time.Duration, bitrate int
 
 func renameCmd(oldPath, newName string) tea.Cmd {
 	return func() tea.Msg {
-		dir := filepath.Dir(oldPath)
-		if !strings.Contains(filepath.Base(newName), ".") {
-			newName += filepath.Ext(oldPath)
+		newPath, err := renameDestination(oldPath, newName)
+		if err != nil {
+			return renameResultMsg{oldPath: oldPath, err: err}
 		}
-		newPath := filepath.Join(dir, filepath.Base(newName))
 		if err := storage.RenameWithMeta(oldPath, newPath); err != nil {
-			return recordsMsg{err: err}
+			return renameResultMsg{oldPath: oldPath, newPath: newPath, err: friendlyRenameError(err)}
 		}
-		return refreshMsg{}
+		return renameResultMsg{oldPath: oldPath, newPath: newPath}
 	}
+}
+
+func renameDestination(oldPath, newName string) (string, error) {
+	if err := validateRenameInput(newName); err != nil {
+		return "", err
+	}
+	name := filepath.Base(strings.TrimSpace(newName))
+	if !strings.Contains(name, ".") {
+		name += filepath.Ext(oldPath)
+	}
+	return filepath.Join(filepath.Dir(oldPath), name), nil
+}
+
+func validateRenameInput(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("Name cannot be empty")
+	}
+	if name == "." || name == ".." {
+		return errors.New("Name must include filename text")
+	}
+	if filepath.Base(name) != name {
+		return errors.New("Name cannot include folders")
+	}
+	ext := filepath.Ext(name)
+	stem := strings.TrimSuffix(name, ext)
+	if strings.TrimSpace(stem) == "" {
+		return errors.New("Name must include filename text")
+	}
+	return nil
+}
+
+func friendlyRenameError(err error) error {
+	if errors.Is(err, storage.ErrDestinationExists) {
+		return errors.New("A recording with that name already exists")
+	}
+	return err
 }
 
 func deleteCmd(path string) tea.Cmd {
 	return func() tea.Msg {
-		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
-			return recordsMsg{err: err}
+		if err := storage.DeleteRecording(path); err != nil {
+			return deleteResultMsg{path: path, err: err}
 		}
-		_ = storage.DeleteMeta(path)
-		return refreshMsg{}
+		return deleteResultMsg{path: path}
 	}
 }
 
-func openFileCmd(path string) tea.Cmd {
+func (m *model) openFileCmd(path string) tea.Cmd {
 	return func() tea.Msg {
-		if err := openFile(path); err != nil {
-			return recordsMsg{err: err}
-		}
-		return refreshMsg{}
+		return openResultMsg{path: path, err: m.platform.Open(path)}
 	}
 }
 
-func copyPathCmd(path string) tea.Cmd {
+func (m *model) copyPathCmd(path string) tea.Cmd {
 	return func() tea.Msg {
-		if err := copyToClipboard(path); err != nil {
-			return recordsMsg{err: err}
-		}
-		return refreshMsg{}
+		return copyResultMsg{text: path, err: m.platform.CopyToClipboard(path)}
 	}
 }
 
-func openFile(path string) error {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", path)
-	case "windows":
-		cmd = exec.Command("cmd", "/c", "start", "", path)
-	default:
-		cmd = exec.Command("xdg-open", path)
+func (m *model) copyFileCmd(path string) tea.Cmd {
+	return func() tea.Msg {
+		return copyResultMsg{text: path, file: true, err: m.platform.CopyFileReference(path)}
 	}
-	return cmd.Start()
-}
-
-func copyToClipboard(text string) error {
-	var candidates [][]string
-	switch runtime.GOOS {
-	case "darwin":
-		candidates = [][]string{{"pbcopy"}}
-	case "windows":
-		candidates = [][]string{{"cmd", "/c", "clip"}}
-	default:
-		candidates = [][]string{{"wl-copy"}, {"xclip", "-selection", "clipboard"}, {"xsel", "--clipboard", "--input"}}
-	}
-	for _, args := range candidates {
-		cmd := exec.Command(args[0], args[1:]...)
-		cmd.Stdin = strings.NewReader(text)
-		if err := cmd.Run(); err == nil {
-			return nil
-		}
-	}
-	return nil
 }
 
 func msgRunes(key string) []rune {
