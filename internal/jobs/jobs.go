@@ -1,6 +1,9 @@
 package jobs
 
-import "fmt"
+import (
+	"fmt"
+	"sort"
+)
 
 type Status string
 
@@ -75,6 +78,26 @@ func (t *Tracker) Get(id string) (Update, bool) {
 
 func (t *Tracker) GetByKindPath(kind string, path string) (Update, bool) {
 	return t.Get(ID(kind, path))
+}
+
+func (t *Tracker) GetByPath(path string) (Update, bool) {
+	if t.items == nil {
+		return Update{}, false
+	}
+	ids := make([]string, 0, len(t.items))
+	for id, update := range t.items {
+		if update.Path == path {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		update := t.items[id]
+		if update.Kind != KindConversion {
+			return update, true
+		}
+	}
+	return Update{}, false
 }
 
 func (t *Tracker) Len() int {

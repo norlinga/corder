@@ -5,6 +5,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"corder/internal/audio"
+	"corder/internal/extensions"
 	"corder/internal/jobs"
 	"corder/internal/platform"
 	"corder/internal/recording"
@@ -55,6 +56,7 @@ type model struct {
 	lastCapture   audio.CaptureStats
 	jobs          jobs.Tracker
 	diagnostics   audio.Diagnostics
+	extensions    extensions.LoadResult
 	probe         audio.ProbeResult
 	diagnosticErr error
 	diagnosticRun bool
@@ -65,6 +67,8 @@ type model struct {
 	editBuffer    []rune
 	deleteTarget  string
 	stopRequested bool
+	configDir     string
+	actions       []recordingAction
 }
 
 func Run() error {
@@ -72,13 +76,24 @@ func Run() error {
 	if err != nil {
 		return err
 	}
+	configDir, err := settings.ConfigDir()
+	if err != nil {
+		return err
+	}
+	extensionResult := extensions.Load(extensions.LoadOptions{
+		ConfigDir:   configDir,
+		BuiltinKeys: builtinActionKeys(),
+	})
 	backend := &audio.Backend{}
 	m := &model{
-		cfg:      cfg,
-		backend:  backend,
-		jobs:     jobs.NewTracker(),
-		updates:  make(chan tea.Msg, 128),
-		platform: platform.New(),
+		cfg:        cfg,
+		backend:    backend,
+		jobs:       jobs.NewTracker(),
+		extensions: extensionResult,
+		updates:    make(chan tea.Msg, 128),
+		platform:   platform.New(),
+		configDir:  configDir,
+		actions:    recordingActionsFromExtensions(extensionResult),
 		workflow: recording.Workflow{
 			Recorder:  audioRecorder{backend: backend},
 			Converter: recording.SystemConverter{},

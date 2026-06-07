@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"corder/internal/extensions"
 	"corder/internal/jobs"
 	"corder/internal/storage"
 )
@@ -64,7 +65,7 @@ func (m *model) mainView() string {
 	b.WriteString(panelStyle.Render(m.statusArea()))
 	b.WriteString("\n")
 	b.WriteString("\n")
-	b.WriteString(footerStyle.Render("Space: start/pause  Esc/X: stop  " + fileActionFooter() + "  N: rename  D: delete  S: settings  I: diagnostics  Q: quit"))
+	b.WriteString(footerStyle.Render("Space: start/pause  Esc/X: stop  " + m.fileActionFooter() + "  N: rename  D: delete  S: settings  I: diagnostics  Q: quit"))
 	b.WriteString("\n")
 	return b.String()
 }
@@ -111,6 +112,10 @@ func (m *model) diagnosticsView() string {
 	if m.lastCapture.Callbacks > 0 {
 		b.WriteString("\nLast recording capture:\n")
 		b.WriteString(formatCaptureStats(m.lastCapture))
+	}
+	if len(m.extensions.Actions) > 0 || len(m.extensions.Issues) > 0 {
+		b.WriteString("\nExtensions:\n")
+		b.WriteString(formatExtensionDiagnostics(m.extensions))
 	}
 	b.WriteString("\nEsc: back  R: rerun probe\n")
 	return b.String()
@@ -196,6 +201,9 @@ func (m *model) displayStatus(rec storage.Recording) string {
 	if job, ok := m.jobs.GetByKindPath(jobs.KindConversion, rec.Path); ok {
 		return job.DisplayStatus()
 	}
+	if job, ok := m.jobs.GetByPath(rec.Path); ok {
+		return job.DisplayStatus()
+	}
 	if m.recording && rec.Path == m.currentPath {
 		if m.stopRequested {
 			return "Finalizing"
@@ -206,4 +214,15 @@ func (m *model) displayStatus(rec storage.Recording) string {
 		return "Recording"
 	}
 	return rec.Status.String()
+}
+
+func formatExtensionDiagnostics(result extensions.LoadResult) string {
+	var lines []string
+	if len(result.Actions) > 0 {
+		lines = append(lines, fmt.Sprintf("Registered actions: %d", len(result.Actions)))
+	}
+	for _, issue := range result.Issues {
+		lines = append(lines, "Issue: "+issue.String())
+	}
+	return strings.Join(lines, "\n") + "\n"
 }

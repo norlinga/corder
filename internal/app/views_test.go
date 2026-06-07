@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"corder/internal/audio"
+	"corder/internal/extensions"
 	"corder/internal/jobs"
 	"corder/internal/settings"
 	"corder/internal/storage"
@@ -54,6 +55,26 @@ func TestMainViewUsesConversionDestinationName(t *testing.T) {
 	}
 }
 
+func TestDisplayStatusUsesPluginJobWhenNoConversion(t *testing.T) {
+	rec := storage.Recording{
+		Path:   "/recordings/a.mp3",
+		Status: storage.StatusReady,
+	}
+	m := &model{jobs: jobs.NewTracker()}
+	m.jobs.Set(jobs.Update{
+		Kind:    "plugin:transcribe-openai.transcribe",
+		ID:      jobs.ID("plugin:transcribe-openai.transcribe", rec.Path),
+		Path:    rec.Path,
+		Message: "Transcribing",
+		Percent: 42,
+		Status:  jobs.StatusRunning,
+	})
+
+	if got := m.displayStatus(rec); got != "Transcribing 42%" {
+		t.Fatalf("displayStatus = %q, want plugin status", got)
+	}
+}
+
 func TestDiagnosticsViewIncludesLastCaptureStats(t *testing.T) {
 	m := &model{
 		diagnosticRun: true,
@@ -72,6 +93,24 @@ func TestDiagnosticsViewIncludesLastCaptureStats(t *testing.T) {
 	view := m.diagnosticsView()
 
 	for _, want := range []string{"Last recording capture", "Device: default", "Frames captured: 8192"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("diagnostics view missing %q in:\n%s", want, view)
+		}
+	}
+}
+
+func TestDiagnosticsViewIncludesExtensionIssues(t *testing.T) {
+	m := &model{
+		diagnosticRun: true,
+		extensions: extensions.LoadResult{
+			Actions: []extensions.RegisteredAction{{PluginID: "p", ActionID: "a"}},
+			Issues:  []extensions.Issue{{PluginID: "p", ActionID: "bad", Message: "action key is empty"}},
+		},
+	}
+
+	view := m.diagnosticsView()
+
+	for _, want := range []string{"Extensions", "Registered actions: 1", "p.bad: action key is empty"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("diagnostics view missing %q in:\n%s", want, view)
 		}

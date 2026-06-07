@@ -3,6 +3,9 @@ package app
 import (
 	"strings"
 	"testing"
+
+	"corder/internal/extensions"
+	"corder/internal/storage"
 )
 
 func TestFileActionForKey(t *testing.T) {
@@ -44,6 +47,28 @@ func TestFileActionFooter(t *testing.T) {
 	}
 }
 
+func TestModelFileActionFooterIncludesPluginActions(t *testing.T) {
+	m := &model{
+		actions: recordingActionsFromExtensions(extensions.LoadResult{
+			Actions: []extensions.RegisteredAction{{
+				PluginID: "transcribe-openai",
+				ActionID: "transcribe",
+				Key:      "T",
+				Label:    "transcribe",
+				Formats:  []string{".mp3"},
+			}},
+		}),
+	}
+
+	footer := m.fileActionFooter()
+
+	for _, want := range []string{"Enter: open", "T: transcribe"} {
+		if !strings.Contains(footer, want) {
+			t.Fatalf("footer missing %q in %q", want, footer)
+		}
+	}
+}
+
 func TestHandleFileActionKeyWithoutSelection(t *testing.T) {
 	m := &model{}
 
@@ -53,5 +78,30 @@ func TestHandleFileActionKeyWithoutSelection(t *testing.T) {
 	}
 	if cmd != nil {
 		t.Fatal("expected nil command without selected recording")
+	}
+}
+
+func TestHandleFileActionKeySkipsPluginActionForUnsupportedFormat(t *testing.T) {
+	m := &model{
+		selected: 0,
+		records:  []storage.Recording{{Path: "/recordings/a.wav"}},
+		actions: recordingActionsFromExtensions(extensions.LoadResult{
+			Actions: []extensions.RegisteredAction{{
+				PluginID: "transcribe-openai",
+				ActionID: "transcribe",
+				Key:      "T",
+				Label:    "transcribe",
+				Command:  "transcribe",
+				Formats:  []string{".mp3"},
+			}},
+		}),
+	}
+
+	cmd, ok := m.handleFileActionKey("T")
+	if !ok {
+		t.Fatal("plugin key should be handled")
+	}
+	if cmd != nil {
+		t.Fatal("unsupported format should not return command")
 	}
 }

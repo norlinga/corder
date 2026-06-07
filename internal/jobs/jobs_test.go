@@ -56,3 +56,18 @@ func TestTrackerDefaultsNamespacedID(t *testing.T) {
 		t.Fatalf("ID = %q", got.ID)
 	}
 }
+
+func TestTrackerGetByPathPrefersNonConversion(t *testing.T) {
+	tracker := NewTracker()
+	tracker.Set(Update{Kind: KindConversion, Path: "/recordings/a.wav", Message: "Converting", Status: StatusRunning})
+	tracker.Set(Update{Kind: "plugin:p.a", Path: "/recordings/a.wav", Message: "Transcribing", Status: StatusRunning})
+
+	got, ok := tracker.GetByPath("/recordings/a.wav")
+
+	if !ok {
+		t.Fatal("GetByPath did not find update")
+	}
+	if got.Kind != "plugin:p.a" {
+		t.Fatalf("Kind = %q, want plugin", got.Kind)
+	}
+}

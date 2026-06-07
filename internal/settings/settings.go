@@ -36,11 +36,19 @@ func defaultRecordingDir() string {
 }
 
 func ConfigPath() (string, error) {
+	dir, err := ConfigDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, configName), nil
+}
+
+func ConfigDir() (string, error) {
 	base, err := os.UserConfigDir()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(base, appName, configName), nil
+	return filepath.Join(base, appName), nil
 }
 
 func Load() (Config, error) {
