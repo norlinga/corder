@@ -65,7 +65,7 @@ func (m *model) mainView() string {
 	b.WriteString(panelStyle.Render(m.statusArea()))
 	b.WriteString("\n")
 	b.WriteString("\n")
-	b.WriteString(footerStyle.Render("Space: start/pause  Esc/X: stop  " + m.fileActionFooter() + "  N: rename  D: delete  S: settings  I: diagnostics  Q: quit"))
+	b.WriteString(footerStyle.Render("Space: start/pause  Esc/X: stop/process interrupted  " + m.fileActionFooter() + "  N: rename  D: delete  S: settings  I: diagnostics  Q: quit"))
 	b.WriteString("\n")
 	return b.String()
 }

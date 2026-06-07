@@ -45,6 +45,16 @@ type recordStoppedMsg struct {
 	err         error
 }
 
+type interruptedConversionMsg struct {
+	path        string
+	destination string
+	startedAt   time.Time
+	duration    time.Duration
+	bitrateKbps int
+	retainWAV   bool
+	err         error
+}
+
 type renameResultMsg struct {
 	oldPath string
 	newPath string

@@ -99,6 +99,47 @@ func (m *model) stopRecordingCmd() tea.Cmd {
 	}
 }
 
+func (m *model) postProcessInterruptedCmd(rec storage.Recording) tea.Cmd {
+	return func() tea.Msg {
+		meta, err := storage.ReadMeta(rec.Path)
+		if err != nil {
+			return interruptedConversionMsg{path: rec.Path, err: err}
+		}
+		converter := m.converter()
+		if err := converter.Check(); err != nil {
+			return interruptedConversionMsg{path: rec.Path, err: err}
+		}
+		startedAt := meta.CreatedAt
+		if startedAt.IsZero() {
+			startedAt = rec.CreatedAt
+		}
+		duration := rec.Duration
+		if duration <= 0 && meta.DurationSeconds > 0 {
+			duration = time.Duration(meta.DurationSeconds * float64(time.Second))
+		}
+		bitrate := meta.MP3BitrateKbps
+		if bitrate <= 0 {
+			bitrate = m.cfg.MP3BitrateKbps
+		}
+		meta.CreatedAt = startedAt
+		meta.DurationSeconds = duration.Seconds()
+		meta.Status = storage.StatusConverting
+		meta.MP3BitrateKbps = bitrate
+		meta.SourceWAV = rec.Path
+		if err := m.store().WriteMeta(rec.Path, meta); err != nil {
+			return interruptedConversionMsg{path: rec.Path, err: err}
+		}
+		return interruptedConversionMsg{
+			path:        rec.Path,
+			destination: converter.DestinationFor(rec.Path),
+			startedAt:   startedAt,
+			duration:    duration,
+			bitrateKbps: bitrate,
+			retainWAV:   meta.RetainWAVAfterConvert,
+		}
+	}
+}
+
 func (m *model) runConversion(source string, startedAt time.Time, duration time.Duration, bitrate int, retainWAV bool) {
 	ctx := context.Background()
 	dst := conversion.DestFor(source)
@@ -118,6 +159,27 @@ func (m *model) runConversion(source string, startedAt time.Time, duration time.
 	for p := range updates {
 		m.updates <- jobMsg(p)
 	}
+}
+
+func (m *model) runConversionCmd(source string, startedAt time.Time, duration time.Duration, bitrate int, retainWAV bool) tea.Cmd {
+	return func() tea.Msg {
+		m.runConversion(source, startedAt, duration, bitrate, retainWAV)
+		return refreshMsg{}
+	}
+}
+
+func (m *model) converter() recording.Converter {
+	if m.workflow.Converter != nil {
+		return m.workflow.Converter
+	}
+	return recording.SystemConverter{}
+}
+
+func (m *model) store() recording.Store {
+	if m.workflow.Store != nil {
+		return m.workflow.Store
+	}
+	return recording.SystemStore{}
 }
 
 func deleteCmd(path string) tea.Cmd {

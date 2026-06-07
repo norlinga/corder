@@ -2,6 +2,7 @@ package app
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"corder/internal/jobs"
 	"corder/internal/platform"
 	"corder/internal/recording"
+	"corder/internal/settings"
 	"corder/internal/storage"
 )
 
@@ -307,6 +309,92 @@ func TestHandleMainXStopsRecording(t *testing.T) {
 	}
 	if !m.stopRequested || m.message != "Finalizing WAV" {
 		t.Fatalf("stop state = requested:%t message:%q", m.stopRequested, m.message)
+	}
+}
+
+func TestHandleMainEscQueuesSelectedInterruptedWAVConversion(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "orphan.wav")
+	startedAt := time.Date(2026, 6, 6, 12, 0, 0, 0, time.UTC)
+	if err := os.WriteFile(path, make([]byte, 44+44100*2), 0o644); err != nil {
+		t.Fatalf("write wav: %v", err)
+	}
+	if err := storage.WriteMeta(path, storage.Meta{
+		CreatedAt:             startedAt,
+		SampleRate:            44100,
+		Channels:              1,
+		Status:                storage.StatusRecording,
+		MP3BitrateKbps:        96,
+		RetainWAVAfterConvert: true,
+	}); err != nil {
+		t.Fatalf("write meta: %v", err)
+	}
+	m := &model{
+		cfg:      settings.Config{MP3BitrateKbps: 160},
+		selected: 1,
+		records: []storage.Recording{
+			{Path: filepath.Join(dir, "other.mp3"), Status: storage.StatusReady},
+			{Path: path, Status: storage.StatusInterrupted, Duration: time.Second, CreatedAt: startedAt},
+		},
+		jobs:    jobs.NewTracker(),
+		updates: make(chan tea.Msg, 8),
+		workflow: recording.Workflow{
+			Converter: testConverter{},
+			Store:     recording.SystemStore{},
+		},
+	}
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd == nil {
+		t.Fatal("esc did not return interrupted conversion command")
+	}
+	msg, ok := cmd().(interruptedConversionMsg)
+	if !ok {
+		t.Fatalf("message = %T, want interruptedConversionMsg", msg)
+	}
+	if msg.err != nil {
+		t.Fatalf("interrupted conversion prepare failed: %v", msg.err)
+	}
+	if msg.path != path || msg.destination != filepath.Join(dir, "orphan.mp3") || msg.duration != time.Second || msg.bitrateKbps != 96 || !msg.retainWAV {
+		t.Fatalf("prepared conversion = %+v", msg)
+	}
+
+	_, next := m.Update(msg)
+	if next == nil {
+		t.Fatal("prepared interrupted conversion did not return run command")
+	}
+	if m.message != "Converting to MP3" {
+		t.Fatalf("message = %q, want Converting to MP3", m.message)
+	}
+	progress, ok := m.jobs.GetByKindPath(jobs.KindConversion, path)
+	if !ok {
+		t.Fatal("conversion job not queued")
+	}
+	if progress.Destination != filepath.Join(dir, "orphan.mp3") || progress.Message != "Converting" {
+		t.Fatalf("queued job = %+v", progress)
+	}
+	meta, err := storage.ReadMeta(path)
+	if err != nil {
+		t.Fatalf("read meta: %v", err)
+	}
+	if meta.Status != storage.StatusConverting || meta.DurationSeconds != 1 || meta.SourceWAV != path {
+		t.Fatalf("meta = %+v, want converting metadata", meta)
+	}
+}
+
+func TestHandleMainEscIgnoresUnselectedInterruptedWAV(t *testing.T) {
+	m := &model{
+		selected: 0,
+		records: []storage.Recording{
+			{Path: "/recordings/selected.mp3", Status: storage.StatusReady},
+			{Path: "/recordings/orphan.wav", Status: storage.StatusInterrupted},
+		},
+		jobs: jobs.NewTracker(),
+	}
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if cmd != nil {
+		t.Fatal("esc returned command for unselected interrupted wav")
 	}
 }
 
@@ -611,4 +699,16 @@ func (r *testCommandRunner) Run(name string, args ...string) error {
 
 func (r *testCommandRunner) RunWithInput(input string, name string, args ...string) error {
 	return nil
+}
+
+type testConverter struct {
+	checkErr error
+}
+
+func (c testConverter) Check() error {
+	return c.checkErr
+}
+
+func (testConverter) DestinationFor(source string) string {
+	return strings.TrimSuffix(source, filepath.Ext(source)) + ".mp3"
 }

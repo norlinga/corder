@@ -8,7 +8,9 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"corder/internal/jobs"
 	"corder/internal/settings"
+	"corder/internal/storage"
 )
 
 func (m *model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -84,7 +86,7 @@ func (m *model) handleMainKey(key string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.startRecordingCmd()
-	case "esc", "x":
+	case "esc", "x", "X":
 		if m.recording && m.session != nil {
 			if m.stopRequested {
 				return m, nil
@@ -93,12 +95,27 @@ func (m *model) handleMainKey(key string) (tea.Model, tea.Cmd) {
 			m.message = "Finalizing WAV"
 			return m, m.stopRecordingCmd()
 		}
-		return m, nil
+		rec, ok := m.selectedRecording()
+		if !ok || !canPostProcessInterrupted(rec) {
+			return m, nil
+		}
+		if _, ok := m.jobs.GetByKindPath(jobs.KindConversion, rec.Path); ok {
+			return m, nil
+		}
+		m.message = "Converting to MP3"
+		return m, m.postProcessInterruptedCmd(rec)
 	}
 	if cmd, ok := m.handleFileActionKey(key); ok {
 		return m, cmd
 	}
 	return m, nil
+}
+
+func canPostProcessInterrupted(rec storage.Recording) bool {
+	if !strings.EqualFold(filepath.Ext(rec.Path), ".wav") {
+		return false
+	}
+	return rec.Status == storage.StatusInterrupted
 }
 
 func (m *model) handleSettingsKey(key string) (tea.Model, tea.Cmd) {

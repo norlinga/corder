@@ -213,6 +213,26 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.message = "Saved WAV"
 		}
 		return m, tea.Batch(m.listenUpdatesCmd(), m.refreshCmd())
+	case interruptedConversionMsg:
+		if msg.err != nil {
+			m.message = msg.err.Error()
+			return m, nil
+		}
+		m.jobs.Set(jobs.Update{
+			Kind:        jobs.KindConversion,
+			ID:          jobs.ID(jobs.KindConversion, msg.path),
+			Path:        msg.path,
+			Destination: msg.destination,
+			Percent:     0,
+			Message:     "Converting",
+			Status:      jobs.StatusQueued,
+		})
+		m.message = "Converting to MP3"
+		return m, tea.Batch(
+			m.listenUpdatesCmd(),
+			m.refreshCmd(),
+			m.runConversionCmd(msg.path, msg.startedAt, msg.duration, msg.bitrateKbps, msg.retainWAV),
+		)
 	case renameResultMsg:
 		if msg.err != nil {
 			m.message = msg.err.Error()
