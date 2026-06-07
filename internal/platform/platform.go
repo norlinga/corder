@@ -32,6 +32,11 @@ func (o OS) Open(path string) error {
 	return o.runner().Start(name, args...)
 }
 
+func (o OS) Reveal(path string) error {
+	name, args := RevealCommand(o.goos(), path)
+	return o.runner().Start(name, args...)
+}
+
 func (o OS) CopyToClipboard(text string) error {
 	var lastErr error
 	for _, cmd := range ClipboardCommands(o.goos()) {
@@ -77,6 +82,17 @@ func OpenCommand(goos, path string) (string, []string) {
 		return "cmd", []string{"/c", "start", "", path}
 	default:
 		return "xdg-open", []string{path}
+	}
+}
+
+func RevealCommand(goos, path string) (string, []string) {
+	switch goos {
+	case "darwin":
+		return "open", []string{"-R", path}
+	case "windows":
+		return "explorer", []string{"/select," + path}
+	default:
+		return "xdg-open", []string{filepath.Dir(path)}
 	}
 }
 

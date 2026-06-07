@@ -25,6 +25,25 @@ func TestOpenCommand(t *testing.T) {
 	}
 }
 
+func TestRevealCommand(t *testing.T) {
+	tests := []struct {
+		goos string
+		path string
+		name string
+		args []string
+	}{
+		{goos: "darwin", path: "/tmp/a.mp3", name: "open", args: []string{"-R", "/tmp/a.mp3"}},
+		{goos: "windows", path: `C:\tmp\a.mp3`, name: "explorer", args: []string{`/select,C:\tmp\a.mp3`}},
+		{goos: "linux", path: "/tmp/recordings/a.mp3", name: "xdg-open", args: []string{"/tmp/recordings"}},
+	}
+	for _, tt := range tests {
+		name, args := RevealCommand(tt.goos, tt.path)
+		if name != tt.name || !reflect.DeepEqual(args, tt.args) {
+			t.Fatalf("RevealCommand(%q) = %q %#v, want %q %#v", tt.goos, name, args, tt.name, tt.args)
+		}
+	}
+}
+
 func TestClipboardCommands(t *testing.T) {
 	if got := ClipboardCommands("darwin"); !reflect.DeepEqual(got, [][]string{{"pbcopy"}}) {
 		t.Fatalf("darwin clipboard commands = %#v", got)
@@ -74,6 +93,18 @@ func TestOSOpenUsesRunner(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	if runner.startedName != "xdg-open" || !reflect.DeepEqual(runner.startedArgs, []string{"/tmp/a.mp3"}) {
+		t.Fatalf("started = %q %#v", runner.startedName, runner.startedArgs)
+	}
+}
+
+func TestOSRevealUsesRunner(t *testing.T) {
+	runner := &fakeRunner{}
+	os := OS{GOOS: "linux", Runner: runner}
+
+	if err := os.Reveal("/tmp/recordings/a.mp3"); err != nil {
+		t.Fatalf("Reveal: %v", err)
+	}
+	if runner.startedName != "xdg-open" || !reflect.DeepEqual(runner.startedArgs, []string{"/tmp/recordings"}) {
 		t.Fatalf("started = %q %#v", runner.startedName, runner.startedArgs)
 	}
 }

@@ -85,6 +85,10 @@ type openResultMsg struct {
 	path string
 	err  error
 }
+type revealResultMsg struct {
+	path string
+	err  error
+}
 type copyResultMsg struct {
 	text string
 	file bool
@@ -293,6 +297,13 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.message = fmt.Sprintf("Opened %s", filepath.Base(msg.path))
 		return m, nil
+	case revealResultMsg:
+		if msg.err != nil {
+			m.message = msg.err.Error()
+			return m, nil
+		}
+		m.message = fmt.Sprintf("Revealed %s", filepath.Base(msg.path))
+		return m, nil
 	case copyResultMsg:
 		if msg.err != nil {
 			m.message = msg.err.Error()
@@ -341,6 +352,11 @@ func (m *model) handleMainKey(key string) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		return m, m.openFileCmd(m.records[m.selected].Path)
+	case "r", "R":
+		if len(m.records) == 0 {
+			return m, nil
+		}
+		return m, m.revealFileCmd(m.records[m.selected].Path)
 	case "s":
 		m.screen = screenSettings
 		m.message = "Settings"
@@ -597,7 +613,7 @@ func (m *model) mainView() string {
 	b.WriteString(panelStyle.Render(m.statusArea()))
 	b.WriteString("\n")
 	b.WriteString("\n")
-	b.WriteString(footerStyle.Render("Space: start/pause  Esc/X: stop  Enter: open  N: rename  D: delete  P: copy path  C: copy file  S: settings  I: diagnostics  Q: quit"))
+	b.WriteString(footerStyle.Render("Space: start/pause  Esc/X: stop  Enter: open  R: reveal  N: rename  D: delete  P: copy path  C: copy file  S: settings  I: diagnostics  Q: quit"))
 	b.WriteString("\n")
 	return b.String()
 }
@@ -1005,6 +1021,12 @@ func deleteCmd(path string) tea.Cmd {
 func (m *model) openFileCmd(path string) tea.Cmd {
 	return func() tea.Msg {
 		return openResultMsg{path: path, err: m.platform.Open(path)}
+	}
+}
+
+func (m *model) revealFileCmd(path string) tea.Cmd {
+	return func() tea.Msg {
+		return revealResultMsg{path: path, err: m.platform.Reveal(path)}
 	}
 }
 

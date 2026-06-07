@@ -11,6 +11,7 @@ import (
 
 	"corder/internal/audio"
 	"corder/internal/conversion"
+	"corder/internal/platform"
 	"corder/internal/recording"
 	"corder/internal/storage"
 )
@@ -491,6 +492,11 @@ func TestOpenAndCopyResultMessages(t *testing.T) {
 		t.Fatalf("open message = %q", m.message)
 	}
 
+	_, _ = m.Update(revealResultMsg{path: "/recordings/a.mp3"})
+	if m.message != "Revealed a.mp3" {
+		t.Fatalf("reveal message = %q", m.message)
+	}
+
 	_, _ = m.Update(copyResultMsg{text: "/recordings/a.mp3"})
 	if m.message != "Copied path" {
 		t.Fatalf("copy message = %q", m.message)
@@ -510,9 +516,41 @@ func TestOpenAndCopyResultErrors(t *testing.T) {
 		t.Fatalf("open error message = %q", m.message)
 	}
 
+	_, _ = m.Update(revealResultMsg{path: "/recordings/a.mp3", err: errors.New("reveal failed")})
+	if m.message != "reveal failed" {
+		t.Fatalf("reveal error message = %q", m.message)
+	}
+
 	_, _ = m.Update(copyResultMsg{text: "/recordings/a.mp3", err: errors.New("copy failed")})
 	if m.message != "copy failed" {
 		t.Fatalf("copy error message = %q", m.message)
+	}
+}
+
+func TestHandleMainRevealDispatchesCommand(t *testing.T) {
+	runner := &testCommandRunner{}
+	m := &model{
+		records: []storage.Recording{{Path: "/recordings/a.mp3"}},
+		platform: platform.OS{
+			GOOS:   "linux",
+			Runner: runner,
+		},
+	}
+
+	_, cmd := m.handleMainKey("r")
+	if cmd == nil {
+		t.Fatal("expected reveal command")
+	}
+	msg := cmd()
+	result, ok := msg.(revealResultMsg)
+	if !ok {
+		t.Fatalf("message = %T, want revealResultMsg", msg)
+	}
+	if result.err != nil {
+		t.Fatalf("reveal error = %v", result.err)
+	}
+	if runner.startedName != "xdg-open" || len(runner.startedArgs) != 1 || runner.startedArgs[0] != "/recordings" {
+		t.Fatalf("started = %q %#v", runner.startedName, runner.startedArgs)
 	}
 }
 
@@ -547,4 +585,23 @@ func (s *testSession) TogglePause() bool {
 
 func (s *testSession) Info() recording.SessionInfo {
 	return s.info
+}
+
+type testCommandRunner struct {
+	startedName string
+	startedArgs []string
+}
+
+func (r *testCommandRunner) Start(name string, args ...string) error {
+	r.startedName = name
+	r.startedArgs = append([]string(nil), args...)
+	return nil
+}
+
+func (r *testCommandRunner) Run(name string, args ...string) error {
+	return nil
+}
+
+func (r *testCommandRunner) RunWithInput(input string, name string, args ...string) error {
+	return nil
 }
